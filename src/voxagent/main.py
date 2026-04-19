@@ -1,26 +1,48 @@
 import logging
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI
 
-from voxagent.config import build_provider, settings
-from voxagent.llm import LLMProvider
-from voxagent.schemas import ChatRequest, ChatResponse
+from voxagent.config import settings
+from voxagent.schemas import ChatRequest, ChatResponse, HealthResponse
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("voxagent")
 
-app = FastAPI(title="vox-agent")
 
-provider: LLMProvider = build_provider(settings)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Configure logging here (after uvicorn has set up its own handlers)
+    # so our log line actually prints.
+    logging.basicConfig(
+        level=settings.log_level.upper(),
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+        force=True,  # override uvicorn's config
+    )
+    logger.info(
+        "vox-agent started (llm_provider=%s, host=%s, port=%s)",
+        settings.llm_provider, settings.host, settings.port,
+    )
+    yield
+    logger.info("vox-agent shutting down")
+
+
+app = FastAPI(
+    title="vox-agent",
+    description="Customer-support agent with inline evaluation",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+
+@app.get("/healthz", response_model=HealthResponse)
+async def healthz() -> HealthResponse:
+    return HealthResponse(status="ok")
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, response: Response) -> ChatResponse:
-    reply = "This is a hardcoded response. Real agent coming in step 1.3."
-    response.headers["X-Verdict"] = "good"
-    response.headers["X-Retry-Count"] = "0"
-    return ChatResponse(session_id=request.session_id, reply=reply)
-
-
-@app.get("/healthz")
-async def healthz() -> dict:
-    return {"status": "ok"}
+async def chat(request: ChatRequest) -> ChatResponse:
+    return ChatResponse(
+        session_id=request.session_id,
+        reply="Hello from vox-agent. Hardcoded for now — LLM coming next.",
+        turn_id=0,
+    )

@@ -9,4 +9,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     session_id: str
     reply: str
-    turn_id: int | None = None
+    turn_id: int
+
+
+class HealthResponse(BaseModel):
+    status: str
