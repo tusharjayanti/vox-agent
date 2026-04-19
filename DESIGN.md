@@ -472,7 +472,7 @@ This image has `pgvector` preinstalled — no separate extension install needed 
 ```bash
 uv sync                 # installs deps from pyproject.toml
 uv run python scripts/init_db.py   # runs migrations
-uv run python run.py    # unified logging via programmatic uvicorn entry point
+uv run voxagent         # unified logging via programmatic uvicorn entry point
 ```
 
 ### Smoke test

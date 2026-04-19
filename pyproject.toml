@@ -26,6 +26,11 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.scripts]
+# Run the server with `uv run voxagent`.
+# Entry points here become installed console commands.
+voxagent = "voxagent.cli:main"
+
 [project.optional-dependencies]
 rag = [
     "voyageai>=0.3",
