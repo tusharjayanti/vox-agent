@@ -67,8 +67,13 @@ uv run python scripts/init_db.py
 ### 5. Run the server
 
 ```bash
-uv run uvicorn voxagent.main:app --reload
+uv run python run.py
 ```
+
+> Uses a programmatic uvicorn entry point that applies unified logging
+> config — see `src/voxagent/logging_config.py`. The raw `uv run uvicorn
+> voxagent.main:app --reload` command still works but falls back to
+> uvicorn's default log format.
 
 ### 6. Smoke test
 
