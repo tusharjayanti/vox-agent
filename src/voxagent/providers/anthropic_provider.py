@@ -1,47 +1,58 @@
+import logging
 import time
 
 import anthropic
+from pydantic import BaseModel
 
-from voxagent.llm import GenerateResult
+from voxagent.llm import LLMResponse, Message
+
+logger = logging.getLogger("voxagent")
 
 
 class AnthropicProvider:
-    def __init__(self, api_key: str, generator_model: str, judge_model: str) -> None:
+    """LLMProvider implementation backed by the Anthropic SDK."""
+
+    def __init__(self, api_key: str) -> None:
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
-        self._generator_model = generator_model
-        self._judge_model = judge_model
 
     async def generate(
         self,
-        messages: list[dict],
+        messages: list[Message],
         system: str,
+        model: str,
         temperature: float,
-    ) -> GenerateResult:
-        start = time.monotonic()
-        response = await self._client.messages.create(
-            model=self._generator_model,
-            max_tokens=1024,
+        max_tokens: int,
+    ) -> LLMResponse:
+        anthropic_messages = [
+            {"role": m.role, "content": m.content} for m in messages
+        ]
+        start = time.perf_counter()
+        api_response = await self._client.messages.create(
+            model=model,
             system=system,
-            messages=messages,
+            messages=anthropic_messages,
             temperature=temperature,
+            max_tokens=max_tokens,
         )
-        latency_ms = int((time.monotonic() - start) * 1000)
-        return GenerateResult(
-            content=response.content[0].text,
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        return LLMResponse(
+            content=api_response.content[0].text,
+            input_tokens=api_response.usage.input_tokens,
+            output_tokens=api_response.usage.output_tokens,
             latency_ms=latency_ms,
         )
 
-    async def complete(
+    async def judge(
         self,
-        prompt: str,
+        user_message: str,
+        agent_response: str,
+        system: str,
+        model: str,
         temperature: float,
-    ) -> str:
-        response = await self._client.messages.create(
-            model=self._judge_model,
-            max_tokens=512,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
+        response_schema: type[BaseModel],
+    ) -> BaseModel | None:
+        # Stubbed for Step 4. Full implementation in Step 7 (LLM judge).
+        raise NotImplementedError(
+            "AnthropicProvider.judge() is implemented in Step 7 (Phase 1.6 — LLM judge). "
+            "This stub exists so the LLMProvider protocol is complete from Step 4."
         )
-        return response.content[0].text

@@ -3,21 +3,23 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from voxagent.config import settings
+from voxagent.config import get_generator_model, get_provider, settings
+from voxagent.llm import LLMProvider, Message
 from voxagent.schemas import ChatRequest, ChatResponse, HealthResponse
 
 logger = logging.getLogger("voxagent")
 
+SYSTEM_PROMPT = (
+    "You are a helpful customer support agent for Acme Store. "
+    "Answer questions about orders, returns (30-day window), "
+    "shipping (3-5 days standard), and account issues. "
+    "If you are unsure, say so rather than guessing."
+)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Configure logging here (after uvicorn has set up its own handlers)
-    # so our log line actually prints.
-    logging.basicConfig(
-        level=settings.log_level.upper(),
-        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-        force=True,  # override uvicorn's config
-    )
+    app.state.provider = get_provider(settings)
     logger.info(
         "vox-agent started (llm_provider=%s, host=%s, port=%s)",
         settings.llm_provider, settings.host, settings.port,
@@ -41,8 +43,18 @@ async def healthz() -> HealthResponse:
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
+    provider: LLMProvider = app.state.provider
+    # No memory yet (Step 5) — single-turn for now
+    messages = [Message(role="user", content=request.message)]
+    response = await provider.generate(
+        messages=messages,
+        system=SYSTEM_PROMPT,
+        model=get_generator_model(settings),
+        temperature=settings.generator_temperature,
+        max_tokens=settings.generator_max_tokens,
+    )
     return ChatResponse(
         session_id=request.session_id,
-        reply="Hello from vox-agent. Hardcoded for now — LLM coming next.",
-        turn_id=0,
+        reply=response.content,
+        turn_id=0,  # Postgres-backed turn_id comes in Step 9
     )
