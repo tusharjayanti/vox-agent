@@ -11,20 +11,34 @@ VoxAgent is a text-based customer support agent with an inline evaluation layer.
 These are decisions made during design. Do not question or relitigate them — if the user wants to change one, they will ask explicitly.
 
 ### Stack
+
 - **Python 3.12+** with **uv** for dependency management. Never suggest `pip`, `poetry`, `pipenv`, or `requirements.txt`.
 - **FastAPI** for the web layer. Never suggest Flask or Django.
 - **asyncpg + raw SQL** for Postgres. **Do not introduce SQLAlchemy, SQLModel, or any ORM.**
-- **Anthropic SDK** (`anthropic` Python package) as the only LLM client. Do not add OpenAI, Ollama, or other providers.
+- **Anthropic SDK** (`anthropic` Python package) is the only LLM implementation in v1. OpenAI and Gemini providers are stubbed placeholders only — see the LLM provider abstraction rules below.
 - **pydantic v2** for all request/response and internal data models. Do not use `dataclasses` where a Pydantic model makes sense.
 - **pgvector** for vector storage in Phase 2. No external vector DB (Pinecone, Weaviate, Chroma, etc.).
 - **Voyage AI** for embeddings in Phase 2. Not OpenAI embeddings.
 
+### LLM provider abstraction (critical)
+
+vox-agent separates agent logic from LLM vendor specifics via an `LLMProvider` protocol in `src/voxagent/llm.py`.
+
+- **Agent code never imports provider SDKs directly.** `agent.py`, `evaluator.py`, `main.py` must never `import anthropic`, `import openai`, or `import google.genai`. They receive and use an `LLMProvider` instance.
+- **All provider-specific code lives in `src/voxagent/providers/`.** Each provider is its own file: `anthropic_provider.py`, `openai_provider.py`, `gemini_provider.py`.
+- **v1 ships only `AnthropicProvider` as implemented.** `OpenAIProvider` and `GeminiProvider` are stub classes that implement the `LLMProvider` protocol but every method raises `NotImplementedError` with a clear message like: "OpenAIProvider is a placeholder. Implementation pending — see DESIGN.md §11 roadmap."
+- **The factory function** in `config.py` reads `VOXAGENT_LLM_PROVIDER` and returns the correct provider instance. For v1, only `"anthropic"` resolves to a working instance; the others raise the NotImplementedError above.
+- **When writing or modifying LLM-calling code, use the protocol.** Never add a second `import anthropic` outside `providers/anthropic_provider.py`.
+
 ### Models (swappable via .env, but defaults are fixed)
-- Generator: `claude-sonnet-4-6`
-- Judge: `claude-haiku-4-5-20251001`
+
+- Generator: `claude-sonnet-4-6` (via AnthropicProvider)
+- Judge: `claude-haiku-4-5-20251001` (via AnthropicProvider)
 - Model names come from config, never hardcoded in business logic.
+- When other providers are implemented, each has its own generator/judge config keys — see `.env.example`.
 
 ### Code style
+
 - `async`/`await` throughout. All I/O functions are async. No sync database calls, no sync HTTP calls.
 - Type hints on every function signature. Use modern syntax (`list[str]`, `str | None`, not `List` / `Optional`).
 - Import order: stdlib, third-party, local — enforced by ruff.
@@ -33,17 +47,20 @@ These are decisions made during design. Do not question or relitigate them — i
 - Keep functions short. If a function exceeds ~40 lines, it probably needs splitting.
 
 ### Data layer
+
 - Migrations are numbered `.sql` files in `migrations/` — never auto-generated.
 - Raw SQL strings use `$1`, `$2` parameter placeholders (asyncpg style, not `%s`).
 - Each query is its own function in `db.py` with a clear name (`insert_turn`, `fetch_conversation`, etc.). Do not inline SQL in agent logic.
 - Use asyncpg's connection pool; obtain connections via `async with pool.acquire()`.
 
 ### Observability
+
 - Every assistant turn writes to `turns` and `evaluations` tables — non-optional.
 - Log latency in ms, input/output tokens from the Anthropic response, retry count.
 - Use structured logging (stdlib `logging` with extra fields) — no `print()` in application code.
 
 ### Testing
+
 - Tests go in `tests/`. One test file per source module being tested.
 - Use `pytest-asyncio` with `asyncio_mode = "auto"`. No decorators on every test.
 - The LLM client is mocked in unit tests. Only integration tests hit the real API, and they're marked with `@pytest.mark.integration` so they're skippable.

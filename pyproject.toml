@@ -1,0 +1,80 @@
+[project]
+name = "vox-agent"
+version = "0.1.0"
+description = "Customer-support agent with inline evaluation, hallucination detection, and retry/fallback logic"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "Tushar Jayanti" },
+]
+license = { text = "MIT" }
+dependencies = [
+    # Web layer
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    
+    # LLM — Anthropic is the v1 default provider; OpenAI and Gemini SDKs
+    # are optional extras (see below) since their providers are stubs.
+    "anthropic>=0.40",
+    
+    # Data layer
+    "asyncpg>=0.29",
+    
+    # Config + validation
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+rag = [
+    "voyageai>=0.3",
+    "pgvector>=0.3",
+]
+
+# Roadmap — OpenAI provider implementation.
+# OpenAIProvider class is a stub in v1; SDK only needed when implemented.
+# Install with: uv sync --extra openai-provider
+openai-provider = [
+    "openai>=1.50.0",
+]
+ 
+# Roadmap — Gemini provider implementation.
+# GeminiProvider class is a stub in v1; SDK only needed when implemented.
+# Install with: uv sync --extra gemini-provider
+gemini-provider = [
+    "google-genai>=0.3.0",
+]
+
+[dependency-groups]
+
+# Development tooling. Installed by default with `uv sync`.
+
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "ruff>=0.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voxagent"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m not integration')",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

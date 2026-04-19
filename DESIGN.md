@@ -79,6 +79,7 @@ Model names are configurable via `.env` so swapping (or upgrading the judge to S
 The evaluator has two layers, cheapest first:
 
 **Layer 1 — Heuristics (deterministic, free, fast):**
+
 - **Length sanity** — not empty, not suspiciously long
 - **Refusal detection** — did the agent decline to answer a reasonable support question?
 - **Hedge-word density** — "I think", "probably", "might be" are flagged when the question expects specifics
@@ -86,6 +87,7 @@ The evaluator has two layers, cheapest first:
 
 **Layer 2 — LLM-as-judge (Claude Haiku, structured JSON):**
 Returns:
+
 ```json
 {
   "relevance": 0-5,
@@ -96,6 +98,7 @@ Returns:
 ```
 
 **Combiner → verdict:**
+
 - `good` → return to user
 - `retry` → re-prompt with explicit correction ("Your previous response lacked X. Be more specific about Y and stay within the provided policy documents.")
 - `escalate` → safe fallback ("Let me connect you with a human agent.")
@@ -119,6 +122,7 @@ FastAPI was chosen over Flask and Django for three reasons specific to this work
 ### 3.5 Data layer: asyncpg + raw SQL
 
 Over SQLAlchemy/SQLModel because:
+
 - Schema is small (3 tables + 1 for Phase 2) and stable
 - Raw SQL is transparent and reviewable — a reviewer reads `db.py` in 30 seconds
 - `asyncpg` is fast, async-native, and has a small API surface
@@ -136,9 +140,57 @@ Over SQLAlchemy/SQLModel because:
 ### 3.7 In-memory conversation store
 
 A plain dict keyed by `session_id`. Not persistent across restarts. This is v1-appropriate for three reasons:
+
 1. Conversations are ephemeral by design in the demo
 2. Full trace is logged to Postgres — memory loss doesn't lose audit data
 3. Interface is abstracted so a Postgres-backed or Redis-backed store can swap in
+
+### 3.8 LLM provider abstraction
+
+vox-agent separates _agent logic_ from _LLM vendor specifics_ via an `LLMProvider` protocol. Agent code (`agent.py`, `evaluator.py`) never imports Anthropic, OpenAI, or Gemini SDKs directly — it receives an `LLMProvider` instance and calls `provider.generate(...)` or `provider.judge(...)`.
+
+**v1 ships only the `AnthropicProvider` implementation.** The `OpenAIProvider` and `GeminiProvider` exist as placeholder stubs in the `providers/` folder — each contains class skeletons that raise `NotImplementedError` with a clear message pointing to the roadmap. This signals architectural intent without promising undelivered functionality.
+
+**Interface (sketch):**
+
+```python
+class LLMProvider(Protocol):
+    async def generate(
+        self, messages: list[Message], system: str, model: str,
+        temperature: float, max_tokens: int
+    ) -> LLMResponse: ...
+
+    async def judge(
+        self, user_message: str, agent_response: str,
+        system: str, model: str, temperature: float,
+        response_schema: type[BaseModel]
+    ) -> BaseModel | None: ...
+```
+
+**Rationale for this design choice:**
+
+1. **Avoids vendor lock-in.** Real production systems migrate between LLM providers for cost, capability, outage resilience, and pricing negotiation. An agent tied to one SDK is a liability.
+2. **Makes testing simpler.** Agent-layer tests mock the `LLMProvider` interface, not a specific SDK. Adding new providers doesn't touch existing tests.
+3. **Isolates provider quirks.** Token-counting fields, system-prompt placement, error types, retry semantics, and structured-output mechanisms all differ between providers. Each quirk lives inside one provider class, not spread across the codebase.
+4. **Honest roadmap.** Stubs document the intent ("this will support OpenAI and Gemini") without shipping untested code that claims to work.
+
+**Provider selection via config:**
+
+```bash
+VOXAGENT_LLM_PROVIDER=anthropic   # "anthropic" | "openai" | "gemini"
+```
+
+A factory in `config.py` reads this and returns the correct provider instance. v1 only resolves `anthropic`; the others raise a clear "not yet implemented, see roadmap" error.
+
+**Provider-specific deps are optional extras** in `pyproject.toml`:
+
+```toml
+[project.optional-dependencies]
+openai-provider = ["openai>=1.50.0"]
+gemini-provider = ["google-genai>=0.3.0"]
+```
+
+So users only install SDKs they actually use. `uv sync` installs Anthropic by default (it's in core deps).
 
 ---
 
@@ -204,6 +256,7 @@ CREATE INDEX idx_documents_embedding ON documents
 ### `POST /chat`
 
 **Request:**
+
 ```json
 {
   "session_id": "sess_abc123",
@@ -212,6 +265,7 @@ CREATE INDEX idx_documents_embedding ON documents
 ```
 
 **Response (200):**
+
 ```json
 {
   "session_id": "sess_abc123",
@@ -221,6 +275,7 @@ CREATE INDEX idx_documents_embedding ON documents
 ```
 
 **Response headers (observability):**
+
 - `X-Verdict: good|retry|escalate`
 - `X-Retry-Count: 0|1`
 - `X-Latency-Ms: 1243`
@@ -255,15 +310,20 @@ voxagent/
 ├── src/voxagent/
 │   ├── __init__.py
 │   ├── main.py                  # FastAPI app
-│   ├── config.py                # env-driven settings
+│   ├── config.py                # env-driven settings + provider factory
 │   ├── schemas.py               # Pydantic request/response models
-│   ├── agent.py                 # orchestration
-│   ├── llm.py                   # Anthropic client wrapper
+│   ├── agent.py                 # orchestration — takes LLMProvider
+│   ├── llm.py                   # LLMProvider protocol + LLMResponse
 │   ├── memory.py                # conversation store
-│   ├── evaluator.py             # heuristics + judge
+│   ├── evaluator.py             # heuristics + judge (uses LLMProvider)
 │   ├── prompts.py               # system prompts, judge rubric
 │   ├── retriever.py             # Phase 2
-│   └── db.py                    # asyncpg pool + queries
+│   ├── db.py                    # asyncpg pool + queries
+│   └── providers/
+│       ├── __init__.py
+│       ├── anthropic_provider.py    # implemented in v1
+│       ├── openai_provider.py       # stub — raises NotImplementedError
+│       └── gemini_provider.py       # stub — raises NotImplementedError
 ├── scripts/
 │   ├── init_db.py               # runs migrations
 │   └── ingest.py                # Phase 2 — embed corpus
@@ -283,42 +343,42 @@ voxagent/
 
 ### Phase 1 — Core eval loop (text only)
 
-| Step | Deliverable |
-|------|------------|
-| 1.1  | Scaffold: `uv init`, deps, layout, `.env.example`, `.gitignore`, README stub |
-| 1.2  | FastAPI skeleton: `/chat` (hardcoded) + `/healthz` |
-| 1.3  | Anthropic SDK wrapper, real Sonnet responses |
-| 1.4  | In-memory conversation store with swappable interface |
-| 1.5  | Evaluator heuristics (length, refusal, hedging) |
-| 1.6  | LLM-as-judge (Haiku) with structured JSON rubric |
-| 1.7  | Retry loop + fallback copy |
-| 1.8  | Postgres logging (3 tables, asyncpg pool) |
-| 1.9  | Tests for evaluator + integration test for full loop |
+| Step | Deliverable                                                                                                                                        |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.1  | Scaffold: `uv init`, deps, layout, `.env.example`, `.gitignore`, README stub                                                                       |
+| 1.2  | FastAPI skeleton: `/chat` (hardcoded) + `/healthz`                                                                                                 |
+| 1.3  | `LLMProvider` protocol + `AnthropicProvider` implementation (generator real, judge stub) + `OpenAIProvider` and `GeminiProvider` placeholder stubs |
+| 1.4  | In-memory conversation store with swappable interface                                                                                              |
+| 1.5  | Evaluator heuristics (length, refusal, hedging)                                                                                                    |
+| 1.6  | LLM-as-judge (Haiku) with structured JSON rubric                                                                                                   |
+| 1.7  | Retry loop + fallback copy                                                                                                                         |
+| 1.8  | Postgres logging (3 tables, asyncpg pool)                                                                                                          |
+| 1.9  | Tests for evaluator + integration test for full loop                                                                                               |
 
 **Phase 1 exit criteria:** `curl` hits `/chat`, gets a real response, verdict in headers, full trace in Postgres.
 
 ### Phase 2 — RAG
 
-| Step | Deliverable |
-|------|------------|
-| 2.1  | Seed corpus: 15–20 fake policy markdown files |
-| 2.2  | pgvector migration + `documents` table |
-| 2.3  | Ingest script: chunk → embed (Voyage) → insert |
-| 2.4  | Retriever module: query → top-3 chunks |
-| 2.5  | Wire retrieved chunks into generator and judge prompts |
+| Step | Deliverable                                              |
+| ---- | -------------------------------------------------------- |
+| 2.1  | Seed corpus: 15–20 fake policy markdown files            |
+| 2.2  | pgvector migration + `documents` table                   |
+| 2.3  | Ingest script: chunk → embed (Voyage) → insert           |
+| 2.4  | Retriever module: query → top-3 chunks                   |
+| 2.5  | Wire retrieved chunks into generator and judge prompts   |
 | 2.6  | Grounding heuristic: flag claims not in retrieved chunks |
 
 **Phase 2 exit criteria:** agent answers policy questions from corpus content; evaluator flags fabricated details.
 
 ### Phase 3 — Demo polish
 
-| Step | Deliverable |
-|------|------------|
-| 3.1  | Meta-eval harness (20–30 cases, Sonnet-judge vs Haiku-judge agreement) |
-| 3.2  | Example traces in README: good, hallucination caught, retry, escalation |
-| 3.3  | Architecture diagram (Mermaid) |
+| Step | Deliverable                                                                  |
+| ---- | ---------------------------------------------------------------------------- |
+| 3.1  | Meta-eval harness (20–30 cases, Sonnet-judge vs Haiku-judge agreement)       |
+| 3.2  | Example traces in README: good, hallucination caught, retry, escalation      |
+| 3.3  | Architecture diagram (Mermaid)                                               |
 | 3.4  | README: what it is, why, design decisions, how to run, eval results, roadmap |
-| 3.5  | Optional: `vhs` demo GIF |
+| 3.5  | Optional: `vhs` demo GIF                                                     |
 
 **Phase 3 exit criteria:** repo is portfolio-ready; a reviewer can understand what's interesting in 5 minutes.
 
@@ -328,7 +388,7 @@ voxagent/
 
 ## 8. Meta-evaluation (Phase 3)
 
-A small eval harness that tests the *evaluator itself*. 20–30 canned cases:
+A small eval harness that tests the _evaluator itself_. 20–30 canned cases:
 
 ```jsonl
 {"user": "...", "response": "...", "retrieved": [...], "expected_verdict": "good"}
@@ -337,12 +397,14 @@ A small eval harness that tests the *evaluator itself*. 20–30 canned cases:
 ```
 
 Cases include:
+
 - Clearly correct responses (should be `good`)
 - Subtle hallucinations — invented numbers, fabricated policy details
 - Off-topic / refusal-when-shouldn't
 - Ambiguous — close to threshold
 
 Runner computes:
+
 - Accuracy (verdict matches expected)
 - Haiku-judge vs Sonnet-judge agreement rate
 - Heuristic-only vs full evaluator accuracy (shows judge's marginal value)
@@ -357,14 +419,27 @@ All via `.env` (see `.env.example`):
 
 ```bash
 # Required
-ANTHROPIC_API_KEY=sk-ant-...
 POSTGRES_DSN=postgresql://voxagent:voxagent@localhost:5432/voxagent
 
-# Model selection (swappable)
-VOXAGENT_GENERATOR_MODEL=claude-sonnet-4-6
-VOXAGENT_JUDGE_MODEL=claude-haiku-4-5-20251001
+# LLM provider selection
+VOXAGENT_LLM_PROVIDER=anthropic   # "anthropic" (v1) | "openai" (roadmap) | "gemini" (roadmap)
 
-# Tuning
+# Anthropic (required when provider=anthropic)
+ANTHROPIC_API_KEY=sk-ant-...
+VOXAGENT_ANTHROPIC_GENERATOR=claude-sonnet-4-6
+VOXAGENT_ANTHROPIC_JUDGE=claude-haiku-4-5-20251001
+
+# OpenAI (roadmap — only needed if provider=openai)
+OPENAI_API_KEY=sk-...
+VOXAGENT_OPENAI_GENERATOR=gpt-4o
+VOXAGENT_OPENAI_JUDGE=gpt-4o-mini
+
+# Gemini (roadmap — only needed if provider=gemini)
+GEMINI_API_KEY=...
+VOXAGENT_GEMINI_GENERATOR=gemini-2.5-pro
+VOXAGENT_GEMINI_JUDGE=gemini-2.5-flash
+
+# Tuning (applies to whichever provider is active)
 VOXAGENT_MAX_RETRIES=1
 VOXAGENT_JUDGE_TEMPERATURE=0.0
 VOXAGENT_GENERATOR_TEMPERATURE=0.3
@@ -414,6 +489,8 @@ curl -X POST http://localhost:8000/chat \
 
 Items called out as v2+ work — not missing features but deliberately deferred:
 
+- **OpenAI provider implementation** — wire up the `OpenAIProvider` stub to use `openai` SDK with structured outputs (`response_format={"type": "json_schema", ...}`) for the judge. Provider interface is already defined in v1; only the concrete implementation is pending.
+- **Gemini provider implementation** — wire up the `GeminiProvider` stub to use `google-genai` SDK with `response_schema` in `generationConfig` for the judge. Same pattern as OpenAI — interface defined, concrete implementation pending.
 - **Redis** for conversation memory across workers and for job queues
 - **Docker Compose** for reproducible multi-service local dev
 - **AWS deploy** (Fargate + RDS + Secrets Manager) with CI/CD
@@ -438,4 +515,4 @@ Things we've decided to not over-think at design time:
 
 ---
 
-*Document owner: Tushar. Last updated at project design.*
+_Document owner: Tushar. Last updated at project design._
