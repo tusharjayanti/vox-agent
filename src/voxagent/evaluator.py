@@ -18,6 +18,12 @@ is actually hallucinated, ungrounded, or semantically off.
 """
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Literal
+
+from pydantic import BaseModel, Field, ValidationError
+
+from voxagent.llm import LLMProvider
+from voxagent.prompts import JUDGE_SYSTEM_PROMPT
 
 
 class HeuristicFlag(str, Enum):
@@ -177,4 +183,109 @@ def run_heuristics(response: str) -> HeuristicResult:
         flags=flags,
         passed=(verdict == "good"),
         preliminary_verdict=verdict,
+    )
+
+
+# ─── Judge layer ───
+
+class JudgeVerdict(BaseModel):
+    """Structured output from the LLM judge.
+
+    Ranges are enforced by Pydantic — if the judge returns a relevance
+    of 7 or a hallucination_risk of 'medium-ish', Pydantic raises
+    ValidationError and run_evaluation() falls back to heuristics only.
+    """
+    relevance: int = Field(ge=0, le=5)
+    groundedness: int = Field(ge=0, le=5)
+    hallucination_risk: Literal["low", "medium", "high"]
+    reasoning: str
+
+
+@dataclass
+class EvaluationResult:
+    """Combined result of heuristic + judge evaluation."""
+    heuristic: HeuristicResult
+    judge: JudgeVerdict | None
+    final_verdict: str  # "good" | "retry" | "escalate"
+    judge_model: str | None = None  # name of the model used for judging
+
+
+def _combine(
+    heuristic: HeuristicResult,
+    judge: JudgeVerdict | None,
+) -> str:
+    """Combine heuristic and judge signals into a final verdict.
+
+    Priority:
+    1. Heuristic "escalate" (refusal, off-topic) — always wins
+    2. Judge says hallucination_risk="high" — escalate
+    3. Judge says relevance < 3 or groundedness < 3 — retry
+    4. Heuristic "retry" (length, hedging) — retry
+    5. Otherwise — good
+    """
+    if heuristic.preliminary_verdict == "escalate":
+        return "escalate"
+
+    if judge is not None:
+        if judge.hallucination_risk == "high":
+            return "escalate"
+        if judge.relevance < 3 or judge.groundedness < 3:
+            return "retry"
+
+    if heuristic.preliminary_verdict == "retry":
+        return "retry"
+
+    return "good"
+
+
+async def run_evaluation(
+    user_message: str,
+    agent_response: str,
+    provider: LLMProvider,
+    judge_model: str,
+    judge_temperature: float = 0.0,
+) -> EvaluationResult:
+    """Run the two-layer evaluator.
+
+    Heuristics first (free, deterministic). If they escalate,
+    skip the judge entirely — saves Haiku tokens when a response
+    is clearly bad.
+
+    Otherwise, call the judge. If the judge call fails or returns
+    malformed JSON, falls back to heuristics-only (judge=None).
+    """
+    heuristic = run_heuristics(agent_response)
+
+    # Short-circuit: if heuristics already say escalate, don't pay for the judge.
+    if heuristic.preliminary_verdict == "escalate":
+        return EvaluationResult(
+            heuristic=heuristic,
+            judge=None,
+            final_verdict="escalate",
+            judge_model=None,
+        )
+
+    # Otherwise, call the judge.
+    judge: JudgeVerdict | None
+    try:
+        raw = await provider.judge(
+            user_message=user_message,
+            agent_response=agent_response,
+            system=JUDGE_SYSTEM_PROMPT,
+            model=judge_model,
+            temperature=judge_temperature,
+            response_schema=JudgeVerdict,
+        )
+        # provider.judge returns BaseModel | None; narrow to JudgeVerdict
+        judge = raw if isinstance(raw, JudgeVerdict) else None
+    except Exception:
+        # Judge call failed — fall back to heuristics only.
+        judge = None
+
+    final = _combine(heuristic, judge)
+    return EvaluationResult(
+        heuristic=heuristic,
+        judge=judge,
+        final_verdict=final,
+        judge_model=judge_model if judge is not None else None,
     )
