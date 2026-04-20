@@ -4,7 +4,7 @@ LLM provider protocol and shared response types.
 Agent code (agent.py, evaluator.py) imports from here only — never from
 provider SDKs directly. All provider-specific code lives in providers/.
 """
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
@@ -20,7 +20,7 @@ class Message(BaseModel):
 
     role: str  # "user" | "assistant"
     content: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class LLMResponse(BaseModel):
