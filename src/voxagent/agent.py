@@ -28,13 +28,31 @@ from voxagent.memory import memory
 from voxagent.prompts import GENERATOR_SYSTEM_PROMPT
 
 
-# Hardcoded fallback used when a response can't be saved by retry.
-# NOT an LLM call — deterministic, safe, always available.
-FALLBACK_MESSAGE = (
+FALLBACK_MESSAGE_TEMPLATE = (
     "I apologize, but I wasn't able to provide a helpful response to "
     "your question. Please try rephrasing, or contact our support team "
     "at support@acmestore.com."
+    "{turn_ref}"
 )
+
+
+def format_fallback_message(turn_id: int | None) -> str:
+    """Format the fallback message with an optional turn reference.
+
+    When Postgres is writing and we have a real turn_id, include a
+    reference line the support team can use to look up the session.
+    When turn_id is None (e.g., in tests where we haven't wired
+    the DB), return the bare template.
+    """
+    if turn_id is None:
+        return FALLBACK_MESSAGE_TEMPLATE.format(turn_ref="")
+    return FALLBACK_MESSAGE_TEMPLATE.format(
+        turn_ref=f" (Reference ID: {turn_id})"
+    )
+
+
+# Backward-compat constant so tests that check FALLBACK_MESSAGE still work.
+FALLBACK_MESSAGE = format_fallback_message(turn_id=None)
 
 
 @dataclass

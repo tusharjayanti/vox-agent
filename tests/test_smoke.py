@@ -45,7 +45,7 @@ class TestHealthz:
 class TestChatSmoke:
     """The /chat endpoint accepts valid requests and returns shaped responses."""
 
-    def test_chat_valid_request_returns_200(self, client):
+    def test_chat_valid_request_returns_200(self, client, mock_db):
         response = client.post("/chat", json={
             "session_id": "smoke-test-1",
             "message": "Hello",
@@ -56,24 +56,24 @@ class TestChatSmoke:
         assert "reply" in body
         assert "turn_id" in body
 
-    def test_chat_missing_message_returns_422(self, client):
+    def test_chat_missing_message_returns_422(self, client, mock_db):
         # FastAPI validates request bodies via Pydantic; missing required
         # fields should return 422 before any handler runs.
         response = client.post("/chat", json={"session_id": "test"})
         assert response.status_code == 422
 
-    def test_chat_empty_message_returns_422(self, client):
+    def test_chat_empty_message_returns_422(self, client, mock_db):
         response = client.post("/chat", json={
             "session_id": "test",
             "message": "",
         })
         assert response.status_code == 422
 
-    def test_chat_missing_session_id_returns_422(self, client):
+    def test_chat_missing_session_id_returns_422(self, client, mock_db):
         response = client.post("/chat", json={"message": "Hello"})
         assert response.status_code == 422
 
-    def test_chat_calls_provider(self, client, mock_provider):
+    def test_chat_calls_provider(self, client, mock_db, mock_provider):
         client.post("/chat", json={
             "session_id": "smoke-test-2",
             "message": "Hello",

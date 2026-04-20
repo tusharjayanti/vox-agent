@@ -21,12 +21,31 @@ def mock_provider():
 
 
 @pytest.fixture
+def mock_db(monkeypatch):
+    """Patch db functions so /chat tests don't touch Postgres."""
+    from voxagent import db
+
+    monkeypatch.setattr(db, "get_or_create_conversation",
+                        AsyncMock(return_value=1))
+    monkeypatch.setattr(db, "insert_turn",
+                        AsyncMock(return_value=42))
+    monkeypatch.setattr(db, "update_turn_content",
+                        AsyncMock(return_value=None))
+    monkeypatch.setattr(db, "insert_evaluation",
+                        AsyncMock(return_value=1))
+    return {
+        "conversation_id": 1,
+        "turn_id": 42,
+    }
+
+
+@pytest.fixture
 def client(mock_provider):
     """FastAPI TestClient with lifespan overridden to install the mock.
 
-    The real lifespan constructs a real AnthropicProvider from settings.
-    For tests we skip that and install the mock directly — faster, and
-    doesn't require ANTHROPIC_API_KEY in the test environment.
+    The real lifespan constructs a real AnthropicProvider from settings
+    and opens a Postgres pool. For tests we skip both and install mocks
+    directly — faster, and doesn't require API keys or a running DB.
 
     Restores the original lifespan on teardown so tests can't affect
     each other.
@@ -34,6 +53,7 @@ def client(mock_provider):
     @asynccontextmanager
     async def test_lifespan(app):
         app.state.provider = mock_provider
+        app.state.pool = AsyncMock()
         yield
 
     original = app.router.lifespan_context
