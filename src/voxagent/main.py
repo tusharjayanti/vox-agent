@@ -1,21 +1,14 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
-from voxagent.config import get_generator_model, get_provider, settings
+from voxagent import agent
+from voxagent.config import get_provider, settings
 from voxagent.llm import LLMProvider
-from voxagent.memory import memory
 from voxagent.schemas import ChatRequest, ChatResponse, HealthResponse
 
 logger = logging.getLogger("voxagent")
-
-SYSTEM_PROMPT = (
-    "You are a helpful customer support agent for Acme Store. "
-    "Answer questions about orders, returns (30-day window), "
-    "shipping (3-5 days standard), and account issues. "
-    "If you are unsure, say so rather than guessing."
-)
 
 
 @asynccontextmanager
@@ -43,25 +36,42 @@ async def healthz() -> HealthResponse:
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
+async def chat_endpoint(
+    request: ChatRequest,
+    response: Response,
+) -> ChatResponse:
+    """Handle a chat turn via the agent orchestrator.
+
+    The agent handles generate → evaluate → retry → fallback. This
+    endpoint's only job is to wire the HTTP layer: call the agent,
+    set observability headers, return the reply.
+    """
     provider: LLMProvider = app.state.provider
 
-    # Add user message first so history sent to the provider includes it.
-    memory.add(request.session_id, "user", request.message)
-    history = memory.get(request.session_id)
-
-    response = await provider.generate(
-        messages=history,
-        system=SYSTEM_PROMPT,
-        model=get_generator_model(settings),
-        temperature=settings.generator_temperature,
-        max_tokens=settings.generator_max_tokens,
+    result = await agent.chat(
+        session_id=request.session_id,
+        user_message=request.message,
+        provider=provider,
+        settings=settings,
     )
 
-    memory.add(request.session_id, "assistant", response.content)
+    # Observability headers — surface eval signals to the client
+    # without requiring a Postgres query
+    response.headers["X-Verdict"] = result.final_verdict
+    response.headers["X-Retry-Count"] = str(result.retry_count)
+    if result.evaluation.judge is not None:
+        response.headers["X-Eval-Relevance"] = str(
+            result.evaluation.judge.relevance
+        )
+        response.headers["X-Eval-Groundedness"] = str(
+            result.evaluation.judge.groundedness
+        )
+        response.headers["X-Hallucination-Risk"] = (
+            result.evaluation.judge.hallucination_risk
+        )
 
     return ChatResponse(
         session_id=request.session_id,
-        reply=response.content,
-        turn_id=0,  # real turn_id comes in Step 9 (Postgres logging)
+        reply=result.reply,
+        turn_id=0,  # Postgres-backed turn_id in Phase 1.8
     )
