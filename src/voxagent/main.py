@@ -4,7 +4,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from voxagent.config import get_generator_model, get_provider, settings
-from voxagent.llm import LLMProvider, Message
+from voxagent.llm import LLMProvider
+from voxagent.memory import memory
 from voxagent.schemas import ChatRequest, ChatResponse, HealthResponse
 
 logger = logging.getLogger("voxagent")
@@ -44,17 +45,23 @@ async def healthz() -> HealthResponse:
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     provider: LLMProvider = app.state.provider
-    # No memory yet (Step 5) — single-turn for now
-    messages = [Message(role="user", content=request.message)]
+
+    # Add user message first so history sent to the provider includes it.
+    memory.add(request.session_id, "user", request.message)
+    history = memory.get(request.session_id)
+
     response = await provider.generate(
-        messages=messages,
+        messages=history,
         system=SYSTEM_PROMPT,
         model=get_generator_model(settings),
         temperature=settings.generator_temperature,
         max_tokens=settings.generator_max_tokens,
     )
+
+    memory.add(request.session_id, "assistant", response.content)
+
     return ChatResponse(
         session_id=request.session_id,
         reply=response.content,
-        turn_id=0,  # Postgres-backed turn_id comes in Step 9
+        turn_id=0,  # real turn_id comes in Step 9 (Postgres logging)
     )
