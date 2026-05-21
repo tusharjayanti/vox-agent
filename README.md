@@ -191,3 +191,5 @@ See DESIGN.md §11 for the full production roadmap.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+<!-- webhook smoke test: 2026-05-21 -->
